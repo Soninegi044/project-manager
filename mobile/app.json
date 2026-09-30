@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Project Manager",
+    "slug": "project-manager",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#2563eb"
+    },
+    "assetBundlePatterns": ["*/"],
+    "ios": { "supportsTablet": true },
+    "android": { "adaptiveIcon": { "backgroundColor": "#2563eb" } },
+    "web": { "bundler": "metro" }
+  }
+}
