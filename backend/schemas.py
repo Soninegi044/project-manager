@@ -1,12 +1,12 @@
-#Pydantic schemas for request/response validation.
+"""Pydantic schemas for request/response validation."""
 from datetime import datetime
-from typing import Optional, Literal
+from typing import Optional
 from pydantic import BaseModel, EmailStr, Field
 
 
 # ---------- Auth ----------
 class UserCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1)
     email: EmailStr
     password: str = Field(min_length=6)
 
@@ -16,14 +16,11 @@ class UserLogin(BaseModel):
     password: str
 
 
-class UserResponse(BaseModel):
-    id: int
+class UserRead(BaseModel):
+    id: str
     name: str
     email: str
     created_at: datetime
-
-    class Config:
-        from_attributes = True
 
 
 class Token(BaseModel):
@@ -32,68 +29,56 @@ class Token(BaseModel):
 
 
 # ---------- Project ----------
-ProjectStatus = Literal["PLANNED", "IN_PROGRESS", "COMPLETED"]
-
-
 class ProjectCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=150)
+    name: str = Field(min_length=1)
     description: str = ""
-    status: ProjectStatus = "PLANNED"
+    status: str = "PLANNED"
 
 
 class ProjectUpdate(BaseModel):
-    name: Optional[str] = Field(default=None, min_length=1, max_length=150)
+    name: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[ProjectStatus] = None
+    status: Optional[str] = None
 
 
-class ProjectResponse(BaseModel):
-    id: int
+class ProjectRead(BaseModel):
+    id: str
     name: str
     description: str
     status: str
-    user_id: int
+    user_id: str
     created_at: datetime
-    task_count: int = 0
-
-    class Config:
-        from_attributes = True
 
 
 # ---------- Task ----------
-TaskStatus = Literal["TODO", "IN_PROGRESS", "COMPLETED"]
-TaskPriority = Literal["LOW", "MEDIUM", "HIGH"]
-
-
 class TaskCreate(BaseModel):
-    title: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1)
     description: str = ""
-    status: TaskStatus = "TODO"
-    priority: TaskPriority = "MEDIUM"
-    project_id: int
+    status: str = "TODO"
+    priority: str = "MEDIUM"
+    project_id: str
 
 
 class TaskUpdate(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    title: Optional[str] = None
     description: Optional[str] = None
-    status: Optional[TaskStatus] = None
-    priority: Optional[TaskPriority] = None
+    status: Optional[str] = None
+    priority: Optional[str] = None
 
 
-class TaskResponse(BaseModel):
-    id: int
+class TaskRead(BaseModel):
+    id: str
     title: str
     description: str
     status: str
     priority: str
-    project_id: int
-    project_name: Optional[str] = None
-    user_id: int
+    project_id: str
+    user_id: str
     created_at: datetime
 
 
 # ---------- Dashboard ----------
-class DashboardResponse(BaseModel):
+class DashboardStats(BaseModel):
     total_projects: int
     total_tasks: int
     completed_tasks: int

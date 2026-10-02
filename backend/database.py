@@ -1,25 +1,21 @@
+"""Local Cassandra connection and session management."""
 import os
-from sqlmodel import SQLModel, Session, create_engine
+from cassandra.cluster import Cluster
 from dotenv import load_dotenv
 
 load_dotenv()
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./app.db")
+CASSANDRA_HOST = os.getenv("CASSANDRA_HOST", "127.0.0.1")
+CASSANDRA_PORT = int(os.getenv("CASSANDRA_PORT", "9042"))
+KEYSPACE = os.getenv("CASSANDRA_KEYSPACE", "project_manager")
 
-# SQLite needs check_same_thread=False when used with FastAPI
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    connect_args={"check_same_thread": False},
-)
-
-
-def create_db_and_tables():
-    
-    SQLModel.metadata.create_all(engine)
+_session = None
 
 
 def get_session():
-    
-    with Session(engine) as session:
-        yield session
+    """Return a singleton Cassandra session."""
+    global _session
+    if _session is None:
+        cluster = Cluster([CASSANDRA_HOST], port=CASSANDRA_PORT)
+        _session = cluster.connect(KEYSPACE)
+    return _session

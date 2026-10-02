@@ -1,173 +1,327 @@
-"""Business logic for projects and tasks."""
-from typing import Optional, List
-from fastapi import HTTPException
-from sqlmodel import Session, select, func
+"""Business logic for projects, tasks, and dashboard using Cassandra."""
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID, uuid4
 
-from models import User, Project, Task
+from cassandra.cluster import Session
+
 from schemas import ProjectCreate, ProjectUpdate, TaskCreate, TaskUpdate
 
 
-# ---------- Users ----------
-def get_user_by_email(session: Session, email: str) -> Optional[User]:
-    return session.exec(select(User).where(User.email == email)).first()
-
-
-def create_user(session: Session, name: str, email: str, hashed_password: str) -> User:
-    user = User(name=name, email=email, password=hashed_password)
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    return user
+def _now():
+    return datetime.now(timezone.utc)
 
 
 # ---------- Projects ----------
-def create_project(session: Session, user: User, data: ProjectCreate) -> Project:
-    project = Project(
-        name=data.name,
-        description=data.description,
-        status=data.status,
-        user_id=user.id,
+def create_project(session: Session, user: dict, data: ProjectCreate):
+    project_id = uuid4()
+    now = _now()
+    user_id = UUID(user["id"])
+
+    session.execute(
+        """
+        INSERT INTO projects_by_user (user_id, id, name, description, status, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (user_id, project_id, data.name, data.description, data.status, now),
     )
-    session.add(project)
-    session.commit()
-    session.refresh(project)
-    return project
+
+    return {
+        "id": str(project_id),
+        "user_id": str(user_id),
+        "name": data.name,
+        "description": data.description,
+        "status": data.status,
+        "created_at": now,
+    }
 
 
-def get_projects(session: Session, user: User) -> List[dict]:
-    projects = session.exec(
-        select(Project).where(Project.user_id == user.id).order_by(Project.created_at.desc())
-    ).all()
-
-    result = []
-    for p in projects:
-        count = session.exec(
-            select(func.count(Task.id)).where(Task.project_id == p.id)
-        ).one()
-        result.append({
-            "id": p.id,
-            "name": p.name,
-            "description": p.description,
-            "status": p.status,
-            "user_id": p.user_id,
-            "created_at": p.created_at,
-            "task_count": count,
-        })
-    return result
+def get_projects(session: Session, user: dict):
+    user_id = UUID(user["id"])
+    rows = session.execute(
+        "SELECT id, user_id, name, description, status, created_at "
+        "FROM projects_by_user WHERE user_id = %s",
+        (user_id,),
+    )
+    return [
+        {
+            "id": str(r.id),
+            "user_id": str(r.user_id),
+            "name": r.name,
+            "description": r.description,
+            "status": r.status,
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
 
 
-def get_project(session: Session, user: User, project_id: int) -> Project:
-    project = session.get(Project, project_id)
-    if not project or project.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Project not found")
-    return project
+def get_project(session: Session, user: dict, project_id: str):
+    try:
+        pid = UUID(project_id)
+    except (ValueError, AttributeError):
+        return None
+    user_id = UUID(user["id"])
+
+    row = session.execute(
+        "SELECT id, user_id, name, description, status, created_at "
+        "FROM projects_by_user WHERE user_id = %s AND id = %s",
+        (user_id, pid),
+    ).one()
+
+    if row is None:
+        return None
+    return {
+        "id": str(row.id),
+        "user_id": str(row.user_id),
+        "name": row.name,
+        "description": row.description,
+        "status": row.status,
+        "created_at": row.created_at,
+    }
 
 
-def update_project(session: Session, user: User, project_id: int, data: ProjectUpdate) -> Project:
-    project = get_project(session, user, project_id)
-    update_data = data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(project, key, value)
-    session.add(project)
-    session.commit()
-    session.refresh(project)
-    return project
+def update_project(session: Session, user: dict, project_id: str, data: ProjectUpdate):
+    existing = get_project(session, user, project_id)
+    if not existing:
+        return None
+
+    name = data.name if data.name is not None else existing["name"]
+    description = data.description if data.description is not None else existing["description"]
+    status = data.status if data.status is not None else existing["status"]
+
+    user_id = UUID(user["id"])
+    pid = UUID(project_id)
+
+    session.execute(
+        """
+        INSERT INTO projects_by_user (user_id, id, name, description, status, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (user_id, pid, name, description, status, existing["created_at"]),
+    )
+
+    existing["name"] = name
+    existing["description"] = description
+    existing["status"] = status
+    return existing
 
 
-def delete_project(session: Session, user: User, project_id: int) -> None:
-    project = get_project(session, user, project_id)
-    session.delete(project)
-    session.commit()
+def delete_project(session: Session, user: dict, project_id: str) -> bool:
+    existing = get_project(session, user, project_id)
+    if not existing:
+        return False
+
+    user_id = UUID(user["id"])
+    pid = UUID(project_id)
+
+    tasks = session.execute(
+        "SELECT id FROM tasks_by_project WHERE project_id = %s",
+        (pid,),
+    )
+    for t in tasks:
+        session.execute(
+            "DELETE FROM tasks_by_user WHERE user_id = %s AND id = %s",
+            (user_id, t.id),
+        )
+        session.execute(
+            "DELETE FROM tasks_by_project WHERE project_id = %s AND id = %s",
+            (pid, t.id),
+        )
+
+    session.execute(
+        "DELETE FROM projects_by_user WHERE user_id = %s AND id = %s",
+        (user_id, pid),
+    )
+    return True
 
 
 # ---------- Tasks ----------
-def create_task(session: Session, user: User, data: TaskCreate) -> Task:
-    project = session.get(Project, data.project_id)
-    if not project or project.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Project not found")
+def create_task(session: Session, user: dict, data: TaskCreate):
+    try:
+        project_id = UUID(data.project_id)
+    except (ValueError, AttributeError):
+        return None
 
-    task = Task(
-        title=data.title,
-        description=data.description,
-        status=data.status,
-        priority=data.priority,
-        project_id=data.project_id,
-        user_id=user.id,
+    project = get_project(session, user, data.project_id)
+    if not project:
+        return None
+
+    user_id = UUID(user["id"])
+    task_id = uuid4()
+    now = _now()
+
+    session.execute(
+        """
+        INSERT INTO tasks_by_user
+        (user_id, id, title, description, status, priority, project_id, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (user_id, task_id, data.title, data.description, data.status,
+         data.priority, project_id, now),
     )
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return task
+    session.execute(
+        """
+        INSERT INTO tasks_by_project
+        (project_id, id, user_id, title, description, status, priority, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (project_id, task_id, user_id, data.title, data.description,
+         data.status, data.priority, now),
+    )
+
+    return {
+        "id": str(task_id),
+        "user_id": str(user_id),
+        "title": data.title,
+        "description": data.description,
+        "status": data.status,
+        "priority": data.priority,
+        "project_id": str(project_id),
+        "created_at": now,
+    }
 
 
-def get_tasks(session: Session, user: User, project_id: Optional[int] = None) -> List[dict]:
-    query = select(Task).where(Task.user_id == user.id)
-    if project_id is not None:
-        query = query.where(Task.project_id == project_id)
-    tasks = session.exec(query.order_by(Task.created_at.desc())).all()
+def get_tasks(session: Session, user: dict, project_id: Optional[str] = None):
+    user_id = UUID(user["id"])
 
-    result = []
-    for t in tasks:
-        project = session.get(Project, t.project_id)
-        result.append({
-            "id": t.id,
-            "title": t.title,
-            "description": t.description,
-            "status": t.status,
-            "priority": t.priority,
-            "project_id": t.project_id,
-            "project_name": project.name if project else None,
-            "user_id": t.user_id,
-            "created_at": t.created_at,
-        })
-    return result
+    if project_id:
+        try:
+            pid = UUID(project_id)
+        except (ValueError, AttributeError):
+            return []
+        rows = session.execute(
+            "SELECT id, user_id, title, description, status, priority, project_id, created_at "
+            "FROM tasks_by_project WHERE project_id = %s",
+            (pid,),
+        )
+    else:
+        rows = session.execute(
+            "SELECT id, user_id, title, description, status, priority, project_id, created_at "
+            "FROM tasks_by_user WHERE user_id = %s",
+            (user_id,),
+        )
 
-
-def get_task(session: Session, user: User, task_id: int) -> Task:
-    task = session.get(Task, task_id)
-    if not task or task.user_id != user.id:
-        raise HTTPException(status_code=404, detail="Task not found")
-    return task
-
-
-def update_task(session: Session, user: User, task_id: int, data: TaskUpdate) -> Task:
-    task = get_task(session, user, task_id)
-    update_data = data.model_dump(exclude_unset=True)
-    for key, value in update_data.items():
-        setattr(task, key, value)
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return task
+    return [
+        {
+            "id": str(r.id),
+            "user_id": str(r.user_id),
+            "title": r.title,
+            "description": r.description,
+            "status": r.status,
+            "priority": r.priority,
+            "project_id": str(r.project_id),
+            "created_at": r.created_at,
+        }
+        for r in rows
+    ]
 
 
-def delete_task(session: Session, user: User, task_id: int) -> None:
-    task = get_task(session, user, task_id)
-    session.delete(task)
-    session.commit()
+def get_task(session: Session, user: dict, task_id: str):
+    try:
+        tid = UUID(task_id)
+    except (ValueError, AttributeError):
+        return None
+
+    user_id = UUID(user["id"])
+    row = session.execute(
+        "SELECT id, user_id, title, description, status, priority, project_id, created_at "
+        "FROM tasks_by_user WHERE user_id = %s AND id = %s",
+        (user_id, tid),
+    ).one()
+
+    if row is None:
+        return None
+    return {
+        "id": str(row.id),
+        "user_id": str(row.user_id),
+        "title": row.title,
+        "description": row.description,
+        "status": row.status,
+        "priority": row.priority,
+        "project_id": str(row.project_id),
+        "created_at": row.created_at,
+    }
+
+
+def update_task(session: Session, user: dict, task_id: str, data: TaskUpdate):
+    existing = get_task(session, user, task_id)
+    if not existing:
+        return None
+
+    title = data.title if data.title is not None else existing["title"]
+    description = data.description if data.description is not None else existing["description"]
+    status = data.status if data.status is not None else existing["status"]
+    priority = data.priority if data.priority is not None else existing["priority"]
+
+    user_id = UUID(user["id"])
+    tid = UUID(task_id)
+    project_id = UUID(existing["project_id"])
+
+    session.execute(
+        """
+        INSERT INTO tasks_by_user
+        (user_id, id, title, description, status, priority, project_id, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (user_id, tid, title, description, status, priority, project_id, existing["created_at"]),
+    )
+    session.execute(
+        """
+        INSERT INTO tasks_by_project
+        (project_id, id, user_id, title, description, status, priority, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """,
+        (project_id, tid, user_id, title, description, status, priority, existing["created_at"]),
+    )
+
+    existing["title"] = title
+    existing["description"] = description
+    existing["status"] = status
+    existing["priority"] = priority
+    return existing
+
+
+def delete_task(session: Session, user: dict, task_id: str) -> bool:
+    existing = get_task(session, user, task_id)
+    if not existing:
+        return False
+
+    user_id = UUID(user["id"])
+    tid = UUID(task_id)
+    project_id = UUID(existing["project_id"])
+
+    session.execute(
+        "DELETE FROM tasks_by_user WHERE user_id = %s AND id = %s",
+        (user_id, tid),
+    )
+    session.execute(
+        "DELETE FROM tasks_by_project WHERE project_id = %s AND id = %s",
+        (project_id, tid),
+    )
+    return True
 
 
 # ---------- Dashboard ----------
-def get_dashboard(session: Session, user: User) -> dict:
-    total_projects = session.exec(
-        select(func.count(Project.id)).where(Project.user_id == user.id)
-    ).one()
+def get_dashboard_stats(session: Session, user: dict):
+    user_id = UUID(user["id"])
 
-    total_tasks = session.exec(
-        select(func.count(Task.id)).where(Task.user_id == user.id)
-    ).one()
+    projects = list(session.execute(
+        "SELECT id FROM projects_by_user WHERE user_id = %s",
+        (user_id,),
+    ))
+    total_projects = len(projects)
 
-    completed_tasks = session.exec(
-        select(func.count(Task.id)).where(
-            Task.user_id == user.id, Task.status == "COMPLETED"
-        )
-    ).one()
-
-    pending_tasks = total_tasks - completed_tasks
+    tasks = list(session.execute(
+        "SELECT status FROM tasks_by_user WHERE user_id = %s",
+        (user_id,),
+    ))
+    total_tasks = len(tasks)
+    completed = sum(1 for t in tasks if t.status == "COMPLETED")
 
     return {
         "total_projects": total_projects,
         "total_tasks": total_tasks,
-        "completed_tasks": completed_tasks,
-        "pending_tasks": pending_tasks,
+        "completed_tasks": completed,
+        "pending_tasks": total_tasks - completed,
     }
