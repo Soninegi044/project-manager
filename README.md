@@ -1,46 +1,32 @@
-# Project & Task Manager
+# Project Manager — Scala + Spring Boot
 
-A beginner-friendly full-stack mobile app to manage projects and tasks.
-
-## Features
-- User registration and login with JWT
-- Create, edit, delete projects
-- Create, complete, delete tasks
-- Dashboard with live statistics
-- User profile with logout
+Full-stack mobile app with **Scala + Spring Boot** backend and **Cassandra** database.
 
 ## Tech Stack
-
-**Backend**: Python, FastAPI, SQLModel, SQLite, JWT
-**Mobile**: React Native, Expo, React Navigation
-
-## Project Structure
-
-backend/    -> FastAPI server
-mobile/     -> React Native app
+- Backend: Scala 2.13.18, Spring Boot 3.3.5, Cassandra 3.11
+- Mobile: React Native + Expo
+- Auth: JWT + BCrypt
 
 ## How to Run
 
-### Backend
-    cd backend
-    python -m venv venv
-    venv\Scripts\activate
-    pip install -r requirements.txt
-    cp .env.example .env
-    uvicorn main:app --reload --host 0.0.0.0 --port 8000
+### 1. Cassandra
+cd C:\cassandra\bin
+.\cassandra.bat -f
 
-Backend: http://127.0.0.1:8000
-Swagger: http://127.0.0.1:8000/docs
+### 2. Scala Backend
+cd scala-backend/scala-backend
+sbt assembly
+java -jar target/scala-2.13/scala-backend.jar
 
-### Mobile
-    cd mobile
-    npm install
-    npx expo start --clear
+Backend: http://localhost:8081
 
-Update mobile/src/services/api.js with your PC LAN IP.
+### 3. Mobile App
+cd mobile
+npm install
+$env:REACT_NATIVE_PACKAGER_HOSTNAME="<http://192.168.0.101:8081>"
+npx expo start --lan
 
 ## API Endpoints
-
 - POST /api/register
 - POST /api/login
 - GET  /api/me
@@ -48,10 +34,5 @@ Update mobile/src/services/api.js with your PC LAN IP.
 - GET/POST/PUT/DELETE /api/tasks
 - GET  /api/dashboard
 
-## Authentication
-
-1. Register -> password hashed with bcrypt
-2. Login -> returns JWT token
-3. Mobile stores token in AsyncStorage
-4. Every request sends Authorization: Bearer <token>
-5. Backend decodes token and identifies user
+## Architecture
+React Native → Spring Boot (Scala) → Cassandra
